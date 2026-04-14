@@ -64,8 +64,14 @@ class GooglePlacesClient:
         response.raise_for_status()
         payload = response.json()
         status = payload.get("status")
+
         if status not in {"OK", "ZERO_RESULTS"}:
-            raise RuntimeError(f"Text search failed for query '{query}': {status} - {payload.get('error_message', '')}")
+            error_message = payload.get("error_message", "")
+            raise RuntimeError(
+                f"Google Places Text Search failed. "
+                f"Query='{query}' | Status='{status}' | Error='{error_message}'"
+            )
+
         return payload
 
     def place_details(self, place_id: str) -> Dict:
@@ -88,12 +94,19 @@ class GooglePlacesClient:
                 ]
             ),
         }
+
         response = self.session.get(DETAILS_URL, params=params, timeout=self.timeout)
         response.raise_for_status()
         payload = response.json()
         status = payload.get("status")
+
         if status != "OK":
-            raise RuntimeError(f"Details lookup failed for place_id '{place_id}': {status} - {payload.get('error_message', '')}")
+            error_message = payload.get("error_message", "")
+            raise RuntimeError(
+                f"Google Place Details failed. "
+                f"Place ID='{place_id}' | Status='{status}' | Error='{error_message}'"
+            )
+
         return payload["result"]
 
 
@@ -109,11 +122,13 @@ class HunterClient:
         response.raise_for_status()
         payload = response.json()
         emails = payload.get("data", {}).get("emails", [])
+
         found: List[str] = []
         for item in emails:
             value = (item.get("value") or "").strip()
             if value:
                 found.append(value)
+
         return found
 
 
@@ -132,23 +147,26 @@ def is_likely_real_email(email: str, domain: str = "") -> bool:
     email = email.strip().lower()
     if not email or "@" not in email:
         return False
+
     prefix = email.split("@", 1)[0]
     if prefix in BAD_EMAIL_PREFIXES:
         return False
-    if domain and not email.endswith("@" + domain):
-        return True
+
     return True
 
 
 def score_email(email: str, domain: str) -> Tuple[int, str]:
     lower = email.lower()
     score = 0
+
     if domain and lower.endswith("@" + domain):
         score += 5
+
     for good_prefix in ["owner", "info", "office", "sales", "contact", "support", "admin"]:
         if lower.startswith(good_prefix + "@"):
             score += 3
             return score, lower
+
     return score, lower
 
 
@@ -156,6 +174,7 @@ def extract_emails_from_text(text: str, domain: str = "") -> List[str]:
     matches = EMAIL_RE.findall(text or "")
     cleaned = []
     seen = set()
+
     for email in matches:
         email = email.strip().strip(".,;:()[]{}<>")
         if not is_likely_real_email(email, domain=domain):
@@ -164,6 +183,7 @@ def extract_emails_from_text(text: str, domain: str = "") -> List[str]:
             continue
         seen.add(email.lower())
         cleaned.append(email)
+
     return cleaned
 
 
@@ -179,10 +199,12 @@ def find_emails_from_website(session: requests.Session, website: str, timeout: i
 
     domain = normalize_domain(website)
     urls_to_try = [website]
+
     for path in COMMON_CONTACT_PATHS:
         urls_to_try.append(urljoin(website, path))
 
     found: List[str] = []
+
     for url in urls_to_try:
         try:
             html = fetch_page(session, url, timeout)
@@ -220,6 +242,7 @@ def iter_place_ids(client: GooglePlacesClient, query: str, max_pages: int) -> It
     while pages_seen < max_pages:
         payload = client.text_search(query=query, page_token=page_token)
         results = payload.get("results", [])
+
         for item in results:
             yield item
 
@@ -273,18 +296,21 @@ def passes_filters(
         return False
     if require_email and not lead.email:
         return False
+
     return True
 
 
 def dedupe_leads(leads: List[Lead]) -> List[Lead]:
     seen: Set[str] = set()
     deduped: List[Lead] = []
+
     for lead in leads:
         key = lead.place_id or f"{lead.business_name}|{lead.formatted_address}"
         if key in seen:
             continue
         seen.add(key)
         deduped.append(lead)
+
     return deduped
 
 
@@ -293,8 +319,10 @@ def leads_to_csv_bytes(leads: List[Lead]) -> bytes:
     fieldnames = list(Lead.__dataclass_fields__.keys())
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
+
     for lead in leads:
         writer.writerow(asdict(lead))
+
     return output.getvalue().encode("utf-8")
 
 
@@ -355,11 +383,18 @@ def run_search(
                     require_email=require_email,
                 ):
                     leads.append(lead)
+
             except Exception:
                 continue
 
     leads = dedupe_leads(leads)
-    leads.sort(key=lambda x: (x.rating if x.rating is not None else 99, -(x.reviews or 0), x.business_name.lower()))
+    leads.sort(
+        key=lambda x: (
+            x.rating if x.rating is not None else 99,
+            -(x.reviews or 0),
+            x.business_name.lower(),
+        )
+    )
     return leads
 
 
@@ -398,8 +433,10 @@ queries_text = st.text_area(
 )
 
 col1, col2 = st.columns([1, 2])
+
 with col1:
     run_button = st.button("Run search", type="primary", use_container_width=True)
+
 with col2:
     st.info("Use focused searches like 'roofing company in New Jersey' or 'hvac contractor in Miami FL'.")
 
@@ -413,34 +450,39 @@ if run_button:
         if not queries:
             st.error("Add at least one search query.")
         else:
-            with st.spinner("Running search and collecting leads..."):
-                leads = run_search(
-                    google_api_key=google_api_key,
-                    hunter_api_key=hunter_api_key,
-                    queries=queries,
-                    min_rating=min_rating,
-                    max_rating=max_rating,
-                    min_reviews=min_reviews,
-                    max_pages=max_pages,
-                    require_email=require_email,
-                    allow_no_website=allow_no_website,
-                    include_non_operational=include_non_operational,
-                )
+            try:
+                with st.spinner("Running search and collecting leads..."):
+                    leads = run_search(
+                        google_api_key=google_api_key,
+                        hunter_api_key=hunter_api_key,
+                        queries=queries,
+                        min_rating=min_rating,
+                        max_rating=max_rating,
+                        min_reviews=min_reviews,
+                        max_pages=max_pages,
+                        require_email=require_email,
+                        allow_no_website=allow_no_website,
+                        include_non_operational=include_non_operational,
+                    )
 
-            st.success(f"Found {len(leads)} leads.")
+                st.success(f"Found {len(leads)} leads.")
 
-            if leads:
-                rows = [asdict(lead) for lead in leads]
-                st.dataframe(rows, use_container_width=True)
-                st.download_button(
-                    label="Download CSV",
-                    data=leads_to_csv_bytes(leads),
-                    file_name="google_maps_leads.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            else:
-                st.warning("No leads matched your filters. Try broader searches or remove the email requirement.")
+                if leads:
+                    rows = [asdict(lead) for lead in leads]
+                    st.dataframe(rows, use_container_width=True)
+                    st.download_button(
+                        label="Download CSV",
+                        data=leads_to_csv_bytes(leads),
+                        file_name="google_maps_leads.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning("No leads matched your filters. Try broader searches or remove the email requirement.")
+
+            except Exception as e:
+                st.error(str(e))
+                st.stop()
 
 with st.expander("How to run this locally"):
     st.code(
