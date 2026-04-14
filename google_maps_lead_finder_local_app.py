@@ -53,12 +53,12 @@ class GooglePlacesClient:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0 lead-finder/1.0"})
 
-    def text_search(self, query: str, page_token: Optional[str] = None) -> Dict:
+    def text_search(self, query: Optional[str] = None, page_token: Optional[str] = None) -> Dict:
         params = {"key": self.api_key}
         if page_token:
             params["pagetoken"] = page_token
         else:
-            params["query"] = query
+            params["query"] = query or ""
 
         response = self.session.get(TEXT_SEARCH_URL, params=params, timeout=self.timeout)
         response.raise_for_status()
@@ -240,7 +240,24 @@ def iter_place_ids(client: GooglePlacesClient, query: str, max_pages: int) -> It
     pages_seen = 0
 
     while pages_seen < max_pages:
-        payload = client.text_search(query=query, page_token=page_token)
+        if page_token:
+            payload = None
+
+            for _ in range(5):
+                try:
+                    payload = client.text_search(page_token=page_token)
+                    break
+                except RuntimeError as e:
+                    if "INVALID_REQUEST" in str(e):
+                        time.sleep(3)
+                        continue
+                    raise
+
+            if payload is None:
+                break
+        else:
+            payload = client.text_search(query=query)
+
         results = payload.get("results", [])
 
         for item in results:
@@ -252,7 +269,7 @@ def iter_place_ids(client: GooglePlacesClient, query: str, max_pages: int) -> It
         if not page_token:
             break
 
-        time.sleep(2.5)
+        time.sleep(3)
 
 
 def lead_from_details(details: Dict, search_query: str, category_hint: str, email: str, email_source: str) -> Lead:
